@@ -9,10 +9,11 @@ use Psr\Http\Message\ResponseInterface;
  */
 class Response
 {
-    /**
-     * @var ?ResponseInterface
-     */
-    private $httpResponse;
+    private ?ResponseInterface $httpResponse;
+
+    public function __construct()
+    {
+    }
 
     /**
      * Gets the response reason phrase associated with the status code.
@@ -21,7 +22,7 @@ class Response
     {
         $httpResponse = $this->getHttpResponse();
 
-        if (null === $httpResponse) {
+        if (!$httpResponse instanceof ResponseInterface) {
             return false;
         }
 
@@ -35,7 +36,7 @@ class Response
     {
         $httpResponse = $this->getHttpResponse();
 
-        if (null === $httpResponse) {
+        if (!$httpResponse instanceof ResponseInterface) {
             return 0;
         }
 
@@ -66,26 +67,25 @@ class Response
 
     /**
      * Create response as object.
+     *
+     * @throws \JsonException
      */
     public function getObjectResponse(): ?object
     {
         $httpResponse = $this->getHttpResponse();
 
-        if (null === $httpResponse) {
+        if (!$httpResponse instanceof ResponseInterface) {
             return null;
         }
 
-        if ($httpResponse->hasHeader('content-type') && preg_match(Utils::JSON_PATTERN, $httpResponse->getHeaderLine('content-type'))) {
-            try {
-                $decode = Utils::jsonDecode($this->getRawResponse());
+        if (
+            $httpResponse->hasHeader('content-type')
+            && preg_match(Utils::JSON_PATTERN, $httpResponse->getHeaderLine('content-type'))
+        ) {
+            $decode = Utils::jsonDecode($this->getRawResponse());
 
-                if (\is_object($decode)) {
-                    return $decode;
-                }
-
-                return null;
-            } catch (\InvalidArgumentException $th) {
-                return null;
+            if (\is_object($decode)) {
+                return $decode;
             }
         }
 
@@ -99,7 +99,7 @@ class Response
     {
         $httpResponse = $this->getHttpResponse();
 
-        if (null === $httpResponse) {
+        if (!$httpResponse instanceof ResponseInterface) {
             return '';
         }
 

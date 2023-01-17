@@ -2,128 +2,59 @@
 
 namespace ManCurl;
 
-use ManCurl\Exception\FileNotFoundException;
-
 final class Utils
 {
-    public const JSON_PATTERN = '/^(?:application|text)\/(?:[a-z]+(?:[\.-]' .
-                                '[0-9a-z]+){0,}[\+\.]|x-)?json(?:-[a-z]+)?/i';
-
-    /**
-     * Calculates Java hashCode() for a given string.
-     *
-     * WARNING: This method is not Unicode-aware, so use it only on ANSI strings.
-     *
-     * @see https://en.wikipedia.org/wiki/Java_hashCode()#The_java.lang.String_hash_function
-     */
-    public static function hashCode(string $string): int
-    {
-        $result = 0;
-        for ($i = 0, $len = \strlen($string); $i < $len; ++$i) {
-            $result = (-$result + ($result << 5) + \ord($string[$i])) & 0xFFFFFFFF;
-        }
-
-        if (\PHP_INT_SIZE > 4) {
-            if ($result > 0x7FFFFFFF) {
-                $result -= 0x100000000;
-            } elseif ($result < -0x80000000) {
-                $result += 0x100000000;
-            }
-        }
-
-        return $result;
-    }
+    public const JSON_PATTERN = '/^(?:application|text)\/(?:[a-z]+(?:[\.-][0-9a-z]+){0,}[\+\.]|x-)?json(?:-[a-z]+)?/i';
 
     /**
      * Sometime we need to add content-type as Content-Type to matching request from app,
      * in this section we will use the the key from request input.
      *
      *  @return bool true if already have content-type, false otherwise
+     *
+     * @psalm-suppress MixedArgumentTypeCoercion
      */
     public static function contentTypeMatch(array $headers): bool
     {
-        if (\in_array('content-type', array_map('strtolower', array_keys($headers)))) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Reorders array by hashCode() of its keys.
-     */
-    public static function reorderByHashCode(array $data): array
-    {
-        $hashCodes = [];
-        foreach ($data as $key => $value) {
-            $hashCodes[$key] = self::hashCode($key);
-        }
-
-        uksort($data, function ($a, $b) use ($hashCodes) {
-            $a = $hashCodes[$a];
-            $b = $hashCodes[$b];
-
-            if ($a < $b) {
-                return -1;
-            } elseif ($a > $b) {
-                return 1;
-            }
-
-            return 0;
-        });
-
-        return $data;
+        return !empty($headers) && \in_array('content-type', array_map('strtolower', array_keys($headers)));
     }
 
     /**
      * Generates random multipart boundary string.
      */
-    public static function generateMultipartBoundary(): string
+    public static function generateMultipartBoundary(int $length = 30): string
     {
-        $boundaryChar = '-_1234567890abcdefghijklmnopqrst' .
-                        'uvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        $boundaryLength = 30;
+        return (static function (int $length) {
+            $string = '';
 
-        $result = '';
-        $max    = \strlen($boundaryChar) - 1;
-        for ($i = 0; $i < $boundaryLength; ++$i) {
-            $result .= $boundaryChar[mt_rand(0, $max)];
-        }
+            while (($len = \strlen($string)) < $length) {
+                $size  = $length - $len;
+                $bytes = random_bytes(max(1, $size));
+                $string .= substr(str_replace(['/', '+', '='], '', base64_encode($bytes)), 0, $size);
+            }
 
-        return $result;
+            return $string;
+        })($length);
     }
 
     /**
-     * Convert image to base64 string
+     * Determine if a given string is valid JSON.
      *
-     * @throws FileNotFoundException
+     * @psalm-suppress UnusedFunctionCall
      */
-    public static function imageToBase64(string $file): string
+    public static function isJson(mixed $value): bool
     {
-        $type = pathinfo($file, \PATHINFO_EXTENSION);
-        $data = file_get_contents($file);
-
-        if (false === $data) {
-            throw new FileNotFoundException(null, 0, null, $file);
+        if (! \is_string($value)) {
+            return false;
         }
 
-        return 'data:image/' . $type . ';base64,' . base64_encode($data);
-    }
-
-    /**
-     * Check if json is valid
-     *
-     * @param mixed $value
-     */
-    public static function isJson($value): bool
-    {
-        if (
-            \is_string($value) && \is_array(json_decode($value, true)) && (\JSON_ERROR_NONE == json_last_error())
-        ) {
-            return true;
+        try {
+            self::jsonDecode($value, true);
+        } catch (\JsonException) {
+            return false;
         }
 
-        return false;
+        return true;
     }
 
     /**
@@ -169,7 +100,7 @@ final class Utils
             // Now move the file to its real destination (replaces if exists).
             $moveResult = @rename($filenameTmp, $filename);
 
-            if (true === $moveResult) {
+            if ($moveResult) {
                 // Successful write and move. Return true.
                 return true;
             }
@@ -187,35 +118,35 @@ final class Utils
      * Convert array to object
      *
      * @param array $array array data to convert
+     *
+     * @throws \JsonException
      */
     public static function toObject(array $array): object
     {
-        return (object) json_decode(json_encode($array));
+        return (object) self::jsonDecode(self::jsonEncode($array));
     }
 
     /**
-     * Convert object to array
+     * Convert data to array
      *
-     * @param mixed $data input a object or JSON string
+     * @throws \JsonException
      */
-    public static function toArray($data): array
+    public static function toArray(string|object|array $data): array
     {
         if (\is_string($data) && self::isJson($data)) {
-            return (array) json_decode($data, true);
+            return (array) self::jsonDecode($data, true);
         }
 
         $result = [];
         $data   = (array) $data;
+
+        /** @var string|object|array $value */
         foreach ($data as $key => $value) {
             if (\is_object($value)) {
                 $value = (array) $value;
             }
 
-            if (\is_array($value)) {
-                $result[$key] = self::toArray($value);
-            } else {
-                $result[$key] = $value;
-            }
+            $result[$key] = \is_array($value) ? self::toArray($value) : $value;
         }
 
         return $result;
@@ -224,45 +155,46 @@ final class Utils
     /**
      * Wrapper for json_decode that throws when an error occurs.
      *
-     * @param string $json  JSON data to parse
-     * @param bool   $assoc when true, returned objects will be converted
-     *                      into associative arrays
-     *
-     * @throws \InvalidArgumentException if the JSON cannot be decoded
-     *
-     * @return mixed
-     *
-     * @link https://www.php.net/manual/en/function.json-decode.php
+     * @throws \JsonException if the JSON cannot be decoded
      */
-    public static function jsonDecode(string $json, bool $assoc = false)
+    public static function jsonDecode(string $json, bool $assoc = false): mixed
     {
-        $data = json_decode($json, $assoc);
-
-        if (\JSON_ERROR_NONE !== json_last_error()) {
-            throw new \InvalidArgumentException('json_decode error: ' . json_last_error_msg());
-        }
-
-        return $data;
+        return json_decode($json, $assoc, 512, \JSON_THROW_ON_ERROR);
     }
 
     /**
      * Wrapper for JSON encoding that throws when an error occurs.
      *
-     * @param mixed $value   The value being encoded
-     * @param int   $options JSON encode option bitmask
-     *
-     * @throws \InvalidArgumentException if the JSON cannot be encoded
-     *
-     * @link https://www.php.net/manual/en/function.json-encode.php
+     * @throws \JsonException if the JSON cannot be encoded
      */
-    public static function jsonEncode($value, int $options = 0): string
+    public static function jsonEncode(mixed $value): string
     {
-        $json = json_encode($value, $options);
+        return json_encode($value, \JSON_THROW_ON_ERROR);
+    }
 
-        if (\JSON_ERROR_NONE !== json_last_error()) {
-            throw new \InvalidArgumentException('json_encode error: ' . json_last_error_msg());
+    /**
+     * Query param parser.
+     */
+    public static function paramParser(mixed $value): mixed
+    {
+        // change to string if has boolean value
+        return \is_bool($value) ? var_export($value, true) : $value;
+    }
+
+    /**
+     * Merge array and remove the first one duplicate key with case sensitive.
+     *
+     * @psalm-suppress MixedArgumentTypeCoercion
+     */
+    public static function mergeCaseless(array $first, array $last): array
+    {
+        $opt = array_map('strtolower', array_keys($last));
+        foreach (array_keys($first) as $key) {
+            if (\in_array(strtolower($key), $opt)) {
+                unset($first[$key]);
+            }
         }
 
-        return (string) $json;
+        return array_merge($first, $last);
     }
 }

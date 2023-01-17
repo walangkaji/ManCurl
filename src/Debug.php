@@ -10,7 +10,7 @@ class Debug
 {
     /** The level markdown & color */
     private const LEVEL = [
-        'info' => [
+        'info'    => [
             'color'   => 'cyan',
             'marking' => '[i]',
         ],
@@ -22,7 +22,7 @@ class Debug
             'color'   => 'yellow',
             'marking' => '[!]',
         ],
-        'error' => [
+        'error'   => [
             'color'   => 'red',
             'marking' => '[x]',
         ],

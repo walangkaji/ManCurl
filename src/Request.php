@@ -2,11 +2,12 @@
 
 namespace ManCurl;
 
-use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Cookie\SetCookie;
+use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\MultipartStream;
-use GuzzleHttp\Psr7\Utils as GuzzleUtils;
-use InvalidArgumentException;
 use ManCurl\Exception\RequestException;
+use ManCurl\Exception\ResponseModelException;
+use ManCurl\ResponseInterface as ManCurlResponseInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamInterface;
@@ -14,159 +15,117 @@ use Psr\Http\Message\StreamInterface;
 final class Request
 {
     /**
-     * An array of POST params.
-     *
-     * @var array
-     */
-    private $posts = [];
-
-    /**
-     * An array of HTTP headers to add to the request.
-     *
-     * @var array
-     */
-    private $headers = [];
-
-    /**
      * Extra Guzzle client options for this request.
-     *
-     * @var array
      */
-    private $clientOptions = [];
+    private array $options = [];
 
     /**
-     * Custom method for this request.
-     *
-     * @var ?string
+     * Identifier for we want use cookie for this request or not.
      */
-    private $method;
+    private bool $useCookie = true;
 
     /**
-     * Cached HTTP response object.
-     *
-     * @var ?ResponseInterface
+     * Http method for request.
      */
-    private $httpResponse;
+    private ?string $method = null;
 
     /**
-     * The constructor.
-     *
      * @param string $url endpoint URL for this request
      */
-    public function __construct(
-        private Client $client,
-        private string $url
-    ) {
+    public function __construct(private Client $client, private string $url)
+    {
     }
 
     /**
-     * Add query param to request, overwriting any previous value,
-     * `addParams()` value will also be overwrite if has same key.
-     *
-     * @param mixed $value
+     * Add query param to request,
+     * overwriting any previous value if has same key.
      */
-    public function addParam(string $key, $value): self
+    public function addParam(string $key, mixed $value): self
     {
-        $this->clientOptions['query'][$key] = \is_bool($value) ? var_export($value, true) : $value;
+        $this->options['query'][$key] = Utils::paramParser($value);
 
         return $this;
     }
 
     /**
-     * Add query params to request. `addParam()` will overwrite value if has same key.
+     * Add query param to request,
+     * overwriting any previous value if has same key.
      */
     public function addParams(array $params): self
     {
-        // change to string if has boolean value
-        $_params = [];
         foreach ($params as $key => $value) {
-            if (\is_bool($value)) {
-                $_params[$key] = var_export($value, true);
-            } else {
-                $_params[$key] = $value;
-            }
+            $this->options['query'][$key] = Utils::paramParser($value);
         }
 
-        $this->clientOptions['query'] = array_merge($_params, $this->clientOptions['query'] ?? []);
-
         return $this;
     }
 
     /**
-     * Add POST param to request, overwriting any previous value,
-     * `addPosts()` value will also be overwrite if has same key,
-     * can't use with `addPost()`, `addPostJson()` and `addMultipart()` at the same time.
+     * Add POST param to request,
+     * overwriting any previous value if has same key.
      *
-     * @param mixed $value
+     * can't use with `addPostJson()` and `addMultipart()` at the same time.
      */
-    public function addPost(string $key, $value): self
+    public function addPost(string $key, mixed $value): self
     {
-        $this->posts['form_params'][$key] = \is_bool($value) ? var_export($value, true) : $value;
+        $this->options['form_params'][$key] = Utils::paramParser($value);
 
         return $this;
     }
 
     /**
-     * Add query POST params to request. `addPost()` will overwrite value if has same key.
+     * Add POST param to request,
+     * overwriting any previous value if has same key.
+     *
+     * can't use with `addPostJson()` and `addMultipart()` at the same time.
      */
     public function addPosts(array $params): self
     {
-        // change to string if has boolean value
-        $_params = [];
+        /** @var mixed $value */
         foreach ($params as $key => $value) {
-            if (\is_bool($value)) {
-                $_params[$key] = var_export($value, true);
-            } else {
-                $_params[$key] = $value;
-            }
+            $this->options['form_params'][$key] = Utils::paramParser($value);
         }
-
-        $this->posts['form_params'] = array_merge($_params, $this->posts['form_params'] ?? []);
 
         return $this;
     }
 
     /**
-     * Add POST json data to request. `addPost()` method will be overwrite if exist,
-     * can't use with `addPost()`, `addPostJson()` and `addMultipart()` at the same time.
-     *
-     * @param string|array|object $value json string, array or object
+     * Add POST json data to request.
+     * can't use with `addPost()` and `addMultipart()` at the same time.
      *
      * @throws RequestException
      */
-    public function addPostJson($value): self
+    public function addPostJson(string|array|object $value): self
     {
         if (!\is_array($value) && !\is_object($value) && !Utils::isJson($value)) {
             throw new RequestException('Only a valid json string, array and object is accepted');
         }
 
-        if (\is_array($value) || \is_object($value)) {
-            try {
-                $json = \GuzzleHttp\Utils::jsonEncode($value);
-            } catch (\InvalidArgumentException $e) {
-                throw new RequestException('Cannot encode value.');
-            }
-        } else {
-            $json = $value;
+        if (Utils::isJson($value) && \is_string($value)) {
+            $value = \GuzzleHttp\Utils::jsonDecode($value);
         }
 
-        $this->posts['json'] = $json;
+        $this->options['json'] = $value;
 
         return $this;
     }
 
     /**
      * Add a multipart data.
-     * can't use with `addPost()`, `addPostJson()` and `addMultipart()` at the same time.
+     * can't use with `addPost()` and `addPostJson()` at the same time.
      *
      * @param string                          $name     the form field name
      * @param StreamInterface|resource|string $contents the data to use in the form element
-     * @param array                           $headers  optional associative array of custom headers to use with the form element
-     * @param string|null                     $filename optional string to send as the filename in the part
+     * @param array                           $headers  associative array of custom headers to use with the form element
+     * @param string|null                     $filename string to send as the filename in the part
      */
-    public function addMultipart(string $name, $contents, array $headers = [], ?string $filename = null): self
-    {
-        $this->posts['multipart'][] = [
+    public function addMultipart(
+        string $name,
+        $contents,
+        array $headers = [],
+        ?string $filename = null
+    ): self {
+        $this->options['multipart'][] = [
             'name'     => $name,
             'contents' => $contents,
             'headers'  => $headers,
@@ -188,35 +147,39 @@ final class Request
     }
 
     /**
-     * Add custom header to request, overwriting any previous or default header value,
-     * `addHeaders()` value will also be overwrite if has same key.
+     * Add header to request, if the input arrays have the same string keys,
+     * then the later value for that key will overwrite the previous one.
      *
      * @param string|bool|int $value
      */
     public function addHeader(string $key, $value): self
     {
-        $this->headers[$key] = $value;
+        $this->options['headers'][$key] = $value;
 
         return $this;
     }
 
     /**
-     * Add custom header to request, `addHeader()` will overwrite value if has same key.
+     * Add header to request, if the input arrays have the same string keys,
+     * then the later value for that key will overwrite the previous one.
      */
     public function addHeaders(array $headers): self
     {
-        $this->headers = array_merge($headers, $this->headers);
+        /** @var mixed $value */
+        foreach ($headers as $key => $value) {
+            $this->options['headers'][$key] = $value;
+        }
 
         return $this;
     }
 
     /**
-     * Use default headers for request.
-     * value will overwrite if we use `->addHeader()` or `->addHeaders()` on this request
+     * Use default headers for request, default headers will
+     * overwritten by `->addHeader()` or `->addHeaders()` if assigned.
      */
-    public function useDefaultHeaders(): self
+    public function useDefaultHeaders(bool $value): self
     {
-        $this->client->useDefaultHeaders(true);
+        $this->client->useDefaultHeaders($value);
 
         return $this;
     }
@@ -226,7 +189,12 @@ final class Request
      */
     public function addCookie(string $name, ?string $value, ?string $domain): self
     {
-        $this->client->addCookie($name, $value, $domain);
+        $cookies = $this->client->getCookies();
+        $cookies->setCookie(new SetCookie([
+            'Name'   => $name,
+            'Value'  => $value,
+            'Domain' => $domain,
+        ]));
 
         return $this;
     }
@@ -234,9 +202,9 @@ final class Request
     /**
      * Disable cookie for request.
      */
-    public function withoutCookie(): self
+    public function disableCookies(): self
     {
-        $this->client->withoutCookie();
+        $this->useCookie = false;
 
         return $this;
     }
@@ -244,138 +212,41 @@ final class Request
     /**
      * Set the extra Guzzle client options for this single request.
      *
-     * @param mixed $value
-     *
      * @see https://docs.guzzlephp.org/en/stable/request-options.html
      */
-    public function addClientOption(string $key, $value): self
+    public function addClientOption(string $key, mixed $value): self
     {
-        $this->clientOptions[$key] = $value;
+        $this->options[$key] = $value;
 
         return $this;
     }
 
     /**
-     * Perform the request and get its raw HTTP response.
+     * Filtered request body of request and set content-type.
      *
-     * @throws \InvalidArgumentException
-     * @throws GuzzleException
+     * for `multipart` post body we use psr7 with custom boundary,
+     * for `json` and `form_params` is use client body options.
      */
-    public function getHttpResponse(): ResponseInterface
+    private function getRequestBody(array $headers): ?StreamInterface
     {
-        return $this->makeRequest();
-    }
-
-    /**
-     * Get raw response body.
-     *
-     * @throws \InvalidArgumentException
-     * @throws GuzzleException
-     */
-    public function getRawResponse(): string
-    {
-        return (string) $this->makeRequest()->getBody();
-    }
-
-    /**
-     * Get direct response body / tidak menggunakan mapping.
-     *
-     * @param bool $assoc when FALSE, decode to object instead of associative array
-     *
-     * @throws \InvalidArgumentException — if the JSON cannot be decoded
-     * @throws InvalidArgumentException
-     * @throws GuzzleException
-     *
-     * @return mixed If the response content-type is json:
-     *               Returns the json decoder's return value
-     *               If the response content-type is something else:
-     *               Returns the original raw response.
-     *               If the response content-type cannot be determined:
-     *               Returns the original raw response.
-     */
-    public function getResponse(bool $assoc = false)
-    {
-        $httpResponse = $this->makeRequest();
-        $response     = (string) $httpResponse->getBody();
-
-        if ($httpResponse->hasHeader('content-type')) {
-            if (preg_match(Utils::JSON_PATTERN, $httpResponse->getHeaderLine('content-type'))) {
-                return Utils::jsonDecode($response, $assoc);
-            }
-
-            return $response;
-        }
-
-        return $response;
-    }
-
-    /**
-     * Convert the request's data into its HTTP POST body contents.
-     *
-     * @throws RequestException
-     *
-     * @return StreamInterface|resource|string|null `null` if GET request
-     */
-    private function getRequestBody()
-    {
-        $posts = $this->posts;
-
-        if (\count($posts) > 1) {
-            throw new RequestException('You cannot use '
-            . 'form_params, json and multipart at the same time.');
-        }
-
-        // We have no POST data and no files.
         $body = null;
 
-        if (isset($posts['form_params'])) {
-            if (!Utils::contentTypeMatch($this->headers)) {
-                $this->addHeader('content-type', 'application/x-www-form-urlencoded; charset=UTF-8');
-            }
-
-            $body = GuzzleUtils::streamFor(http_build_query($posts['form_params']));
-            unset($posts['form_params']);
+        if (!empty($this->options['form_params']) && !Utils::contentTypeMatch($headers)) {
+            $this->addHeader('content-type', 'application/x-www-form-urlencoded; charset=UTF-8');
         }
 
-        if (isset($posts['json'])) {
-            if (!Utils::contentTypeMatch($this->headers)) {
-                $this->addHeader('content-type', 'application/json; charset=UTF-8');
-            }
-
-            $body = $posts['json'];
-            unset($posts['json']);
+        if (!empty($this->options['json']) && !Utils::contentTypeMatch($headers)) {
+            $this->addHeader('content-type', 'application/json; charset=UTF-8');
         }
 
-        if (isset($posts['multipart'])) {
-            $body = new MultipartStream(
-                $posts['multipart'],
-                Utils::generateMultipartBoundary()
-            );
-            unset($posts['multipart']);
+        if (!empty($this->options['multipart'])) {
+            $multipart = (array) $this->options['multipart'];
+            $body      = new MultipartStream($multipart, Utils::generateMultipartBoundary());
+            // Remove the option so that they are not doubly-applied.
+            unset($this->options['multipart']);
         }
 
         return $body;
-    }
-
-    /**
-     * Get request method.
-     */
-    private function getHttpMethod(): string
-    {
-        // Get method from setMethod()
-        if (null !== $this->method) {
-            return $this->method;
-        }
-
-        if (
-            !isset($this->posts['form_params']) && !isset($this->posts['json']) && !isset($this->posts['multipart'])
-        ) {
-            $this->method = 'GET';
-        } else {
-            $this->method = 'POST';
-        }
-
-        return $this->method;
     }
 
     /**
@@ -385,15 +256,55 @@ final class Request
      */
     private function buildHttpRequest(): RequestInterface
     {
-        // Call this body to perform set headers
-        $body = $this->getRequestBody();
+        // Merge client options and request option.
+        $this->options = Utils::mergeCaseless(
+            $this->client->getClientOptions(),
+            $this->options
+        );
+
+        $multiPost = ['json', 'form_params', 'multipart'];
+
+        if (\count(array_intersect(array_keys($this->options), $multiPost)) > 1) {
+            throw new RequestException(
+                'You cannot use form_params, json and multipart at the same time.'
+            );
+        }
+
+        // use setMethod() if defined
+        if (null === $this->method) {
+            if (
+                isset($this->options['form_params'])
+                || isset($this->options['json'])
+                || isset($this->options['multipart'])
+            ) {
+                $this->method = 'POST';
+            } else {
+                $this->method = 'GET';
+            }
+        }
+
+        /** @var array $headers */
+        $headers = $this->options['headers'] ?? [];
+
+        // merge with client default headers if use default headers
+        if ($this->client->useDefaultHeaders) {
+            $headers = Utils::mergeCaseless(
+                $this->client->defaultHeaders,
+                $headers
+            );
+        }
+
+        // set header options with new one
+        $this->options['headers'] = $headers;
+        $this->options['cookies'] = $this->useCookie ? $this->client->getCookies() : false;
+
+        $body = $this->getRequestBody($headers);
 
         return new \GuzzleHttp\Psr7\Request(
-            $this->getHttpMethod(),
-            $this->url,
-            $this->headers,
-            $body,
-            '2.0' // Protocol version
+            method: $this->method,
+            uri: $this->url,
+            body: $body,
+            version: '2.0' // Protocol version
         );
     }
 
@@ -410,20 +321,140 @@ final class Request
     }
 
     /**
-     * Make request to guzzle client.
-     *
-     * @throws RequestException
-     * @throws GuzzleException
+     * Make request with guzzle client.
      */
     public function makeRequest(): ResponseInterface
     {
-        if (!$this->httpResponse instanceof ResponseInterface) {
-            $this->httpResponse = $this->client->guzzleRequest(
-                $this->buildHttpRequest(),
-                $this->clientOptions,
-            );
+        $response = $this->client->guzzleClient()->send(
+            $this->buildHttpRequest(),
+            $this->options,
+        );
+
+        // reset temporary client options to make use default headers always true,
+        // after (maybe) in request we has set disable default headers
+        $this->client->useDefaultHeaders(true);
+
+        return $response;
+    }
+
+    /**
+     * Make request with guzzle client.
+     */
+    public function makeAsyncRequest(): PromiseInterface
+    {
+        $promise = $this->client->guzzleClient()->sendAsync(
+            $this->buildHttpRequest(),
+            $this->options,
+        );
+
+        $this->client->useDefaultHeaders(true);
+
+        return $promise;
+    }
+
+    /**
+     * Perform the request and get its raw HTTP response.
+     */
+    public function getHttpResponse(): ResponseInterface
+    {
+        return $this->makeRequest();
+    }
+
+    /**
+     * Get raw response body.
+     */
+    public function getRawResponse(): string
+    {
+        return (string) $this->makeRequest()->getBody();
+    }
+
+    /**
+     * Get direct response body / tidak menggunakan mapping.
+     *
+     * @param bool $assoc when FALSE, decode to object instead of associative array
+     *
+     * @throws \JsonException
+     *
+     * @return mixed If the response content-type is json:
+     *               Returns the json decoder's return value
+     *               If the response content-type is something else:
+     *               Returns the original raw response.
+     *               If the response content-type cannot be determined:
+     *               Returns the original raw response.
+     */
+    public function getResponse(bool $assoc = false): mixed
+    {
+        $httpResponse = $this->makeRequest();
+        $response     = (string) $httpResponse->getBody();
+
+        if ($httpResponse->hasHeader('content-type')) {
+            if (preg_match(Utils::JSON_PATTERN, $httpResponse->getHeaderLine('content-type'))) {
+                return Utils::jsonDecode($response, $assoc);
+            }
+
+            return $response;
         }
 
-        return $this->httpResponse;
+        return $response;
+    }
+
+    /**
+     * Perform the request and map to `Response` with specific method
+     *
+     * i.e: type hint `TestResponse`
+     *
+     * ```php
+     * mapResponse(function(TestResponse $response) {
+     *      return $response->testMethod();
+     * });
+     * ```
+     *
+     * @template T of object
+     * @template U of ResponseInterface
+     *
+     * @param \Closure(U): T $fn
+     *
+     * @psalm-return T
+     *
+     * @phpstan-return T
+     *
+     * @throws RequestException
+     * @throws ResponseModelException
+     */
+    public function mapResponse(\Closure $fn): object
+    {
+        $reflectionFunction = new \ReflectionFunction($fn);
+        $reflectionParams   = $reflectionFunction->getParameters()[0];
+        $callerType         = $reflectionParams->getType();
+
+        if (!$callerType instanceof \ReflectionNamedType) {
+            throw new RequestException('Response destination class not found.');
+        }
+
+        // string of namespace class
+        $responseClass = $callerType->getName();
+
+        $response = new Response();
+        // initialize `TheResponse`
+        $responseObject = new $responseClass($response);
+
+        // checking `TheResponse` is a child of `object`
+        if (!$responseObject instanceof ManCurlResponseInterface) {
+            throw new RequestException('Response destination class is not exists.');
+        }
+
+        // make request and set the HttpResponse to `TheResponse`,
+        $httpResponse = $this->makeRequest();
+        $response->setHttpResponse($httpResponse);
+
+        try {
+            /** @var U $responseObject */
+            $dataTransferObject = $fn($responseObject);
+        } catch (\TypeError $e) {
+            throw new ResponseModelException($e);
+        }
+
+        // return the method of `TheResponse`
+        return $dataTransferObject;
     }
 }

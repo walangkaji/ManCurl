@@ -6,71 +6,58 @@ use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Cookie\CookieJar;
 use GuzzleHttp\Cookie\CookieJarInterface;
 use GuzzleHttp\Cookie\FileCookieJar;
-use GuzzleHttp\Cookie\SetCookie;
-use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Handler\CurlHandler;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
-use Psr\Http\Message\RequestInterface;
-use Psr\Http\Message\ResponseInterface;
 
+/**
+ * This client is used for manage options of request,
+ * the method in this class will used in every request made,
+ * also we can disable option in Request method.
+ */
 final class Client
 {
+    /** Default User-Agent used in this request. */
     public const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36';
 
-    private ?string $proxy = null;
-
-    private bool $useDefaultHeaders = false;
-
+    /**
+     * The cookie jar
+     */
     private ?CookieJar $cookieJar = null;
 
-    private array $tempCookie = [];
-
-    private bool $useCookie = true;
-
+    /**
+     * Guzzle request options.
+     */
     private array $options = [];
 
+    public bool $useDefaultHeaders = true;
+
     /**
-     * @var string[]
+     * Default header for request,
+     * this headers can be disable if useDefaultHeaders is false
      */
-    private $defaultHeaders = [];
+    public array $defaultHeaders = [];
+
+    /**
+     * The Guzzle Client instance
+     */
+    private ?GuzzleClient $guzzleClient = null;
 
     /**
      * Set Cookie from file.
      */
     public function setCookieFile(?string $filename): self
     {
-        $this->cookieJar = !\is_null($filename)
-        ? new FileCookieJar($filename, true)
-        : new CookieJar();
+        $this->cookieJar = \is_null($filename)
+        ? new CookieJar()
+        : new FileCookieJar($filename, true);
 
         return $this;
     }
 
     /**
-     * Add custom cookies for request.
-     * This cookie marked as temporary and will remove after request.
-     *
-     * @throws \RuntimeException
-     */
-    public function addCookie(string $name, ?string $value, ?string $domain): self
-    {
-        $tempCookie = [
-            'Name'   => $name,
-            'Value'  => $value,
-            'Domain' => $domain,
-        ];
-
-        $this->tempCookie[] = $tempCookie;
-
-        $this->getCookies()->setCookie(new SetCookie($tempCookie));
-
-        return $this;
-    }
-
-    /**
-     * Get cookies.
+     * Get cookies of request.
      */
     public function getCookies(): CookieJar
     {
@@ -83,12 +70,13 @@ final class Client
 
     /**
      * Set the proxy to use for requests.
+     * if we set proxy in this method, all request will used.
      *
      * @param string $proxy string `ip:port` or `null` to disable proxying
      */
     public function setProxy(?string $proxy): self
     {
-        $this->proxy = $proxy;
+        $this->addOption('proxy', $proxy);
 
         return $this;
     }
@@ -96,8 +84,7 @@ final class Client
     /**
      * Set up headers that are required for every request.
      *
-     * After this set, we can use `->request()->useDefaultHeaders()`
-     * for request if we want to use the default headers
+     * this headers can be disable with `->request()->useDefaultHeaders(false)`
      */
     public function setDefaultHeaders(array $headers): self
     {
@@ -106,6 +93,9 @@ final class Client
         return $this;
     }
 
+    /**
+     * Set use default headers or not.
+     */
     public function useDefaultHeaders(bool $value): self
     {
         $this->useDefaultHeaders = $value;
@@ -114,46 +104,19 @@ final class Client
     }
 
     /**
-     * Remove temporary cookie setelah tambah cookie manual pada request.
-     */
-    private function removeTempCookie(): void
-    {
-        if (!empty($this->tempCookie)) {
-            foreach ($this->tempCookie as $value) {
-                $getCookie = $this->getCookies()->getCookieByName($value['Name']);
-
-                if (null !== $getCookie) {
-                    $this->getCookies()->clear(
-                        $getCookie->getDomain(),
-                        $getCookie->getPath(),
-                        $getCookie->getName()
-                    );
-                }
-            }
-
-            $this->tempCookie = [];
-        }
-    }
-
-    /**
-     * Disable cookie for request.
+     * Add Guzzle Client Options.
      *
-     * The cookie is used again after make request, so if we want to disable the cookie
-     * we need calling this method every make request
-     */
-    public function withoutCookie(): void
-    {
-        $this->useCookie = false;
-    }
-
-    /**
-     * Add temporary Client Options, the option will reset after make request.
-     *
-     * @param mixed $value
+     * Because Guzzle Client is immutable, which means that we cannot
+     * change the defaults used by a client after it's created.
+     * so, we just map the added option in request and modify that.
+     * this option is used on every request, we can disable by set
+     * `->request()->addClientOptions(...)` to prevent option
      *
      * @see https://docs.guzzlephp.org/en/stable/request-options.html
+     *
+     * @psalm-suppress MixedArrayAssignment
      */
-    public function addOption(string $key, $value): self
+    public function addOption(string $key, mixed $value): self
     {
         if ('handler' === $key) {
             $this->options[$key][] = $value;
@@ -165,94 +128,91 @@ final class Client
     }
 
     /**
-     * Mock response with a custom response without make real request.
+     * Mock response with a custom response without make real request,
+     * usefull for development.
+     *
+     * @param array<string, string|string[]> $headers Response headers
      */
-    public function mockResponse(string $body, int $code = 200, array $headers = []): self
+    public function mockResponse(int $code = 200, string $body = '', array $headers = []): MockHandler
     {
-        $mock         = new MockHandler([new Response($code, $headers, $body)]);
-        $handlerStack = HandlerStack::create($mock);
+        $mockHandler  = new MockHandler([new Response($code, $headers, $body)]);
+        $handlerStack = HandlerStack::create($mockHandler);
         $this->addOption('handler', $handlerStack);
 
-        return $this;
+        return $mockHandler;
     }
 
     /**
-     * Final client options
+     * This option will merged with request option.
      *
-     * @return array<mixed>
+     * Because Guzzle Client is immutable, which means that we cannot
+     * change the defaults used by a client after it's created.
+     * so, we just map the added option in request and modify that.
+     *
+     * @psalm-suppress PossiblyInvalidArgument
+     * @psalm-suppress MixedArgument
+     * @psalm-suppress MixedAssignment
      */
-    private function finalClientOptions(): array
+    public function getClientOptions(): array
     {
-        $defaultOptions = [
-            'allow_redirects' => ['max' => 8],
-            'connect_timeout' => 30.0, // Give up trying to connect after 30s.
-            'timeout'         => 240.0, // Maximum per-request time (seconds).
-            'http_errors'     => false,
-            'verify'          => false,
-            'headers'         => [
-                'user-agent' => self::DEFAULT_UA,
-            ],
-        ];
+        $options = [];
 
-        if (!empty($this->options)) {
-            foreach ($this->options as $key => $value) {
-                if ('handler' === $key) {
-                    $stack = HandlerStack::create();
-                    $stack->setHandler(new CurlHandler());
-                    foreach ($value as $handlerStack) {
-                        if ($handlerStack instanceof HandlerStack) {
-                            $stack = $handlerStack;
-                        } else {
-                            /** @var callable $handlerStack */
-                            $stack->push($handlerStack, 'request_handler');
-                        }
+        foreach ($this->options as $key => $value) {
+            if ('handler' === $key) {
+                $stack = HandlerStack::create();
+                $stack->setHandler(new CurlHandler());
+
+                foreach ($value as $handlerStack) {
+                    if ($handlerStack instanceof HandlerStack || $handlerStack instanceof MockHandler) {
+                        /** @var callable $handlerStack */
+                        $stack->setHandler($handlerStack);
+                    } else {
+                        $stack->push($handlerStack, 'request_handler');
                     }
-
-                    $defaultOptions['handler'] = $stack;
-                } else {
-                    $defaultOptions[$key] = $value;
                 }
+
+                $options['handler'] = $stack;
+            } else {
+                $options[$key] = $value;
             }
         }
 
-        // don't use cookie if disableCookie() is called
-        if ($this->useCookie) {
-            $defaultOptions['cookies'] = $this->getCookies();
-        }
-
-        // Add default headers if request set useDefaultHeaders
-        if ($this->useDefaultHeaders) {
-            $defaultOptions['headers'] = $this->defaultHeaders;
-        }
-
-        if (!\is_null($this->proxy)) {
-            $defaultOptions['proxy'] = $this->proxy;
-        }
-
-        return $defaultOptions;
+        return $options;
     }
 
     /**
-     * Wraps Guzzle's request and adds special error handling and options.
+     * Get Guzzle Client instance.
      *
-     * @param RequestInterface $request        HTTP request to send
-     * @param array            $requestOptions extra Guzzle options for this request
-     *
-     * @throws GuzzleException
+     * Because Guzzle Client is immutable, which means that we cannot
+     * change the defaults used by a client after it's created.
+     * if we wont to add a another options in this client, we can use
+     * `->request()->addClientOptions(...)` in request without
+     * make a new guzzle client object
      */
-    public function guzzleRequest(RequestInterface $request, array $requestOptions): ResponseInterface
+    public function guzzleClient(): GuzzleClient
     {
-        // Default request options (immutable after client creation).
-        $guzzleClient = new GuzzleClient($this->finalClientOptions());
-        $response     = $guzzleClient->send($request, $requestOptions);
+        if (!$this->guzzleClient instanceof GuzzleClient) {
+            /**
+             * The default options of guzzle client,
+             * this options can be change with `addOption()`
+             */
+            $defaultOptions = [
+                'allow_redirects' => ['max' => 8],
+                'connect_timeout' => 30.0, // Give up trying to connect after 30s.
+                'timeout'         => 240.0, // Maximum per-request time (seconds).
+                'http_errors'     => false,
+                'verify'          => false,
+                'cookies'         => true, // use a shared cookie session associated with the client
+                'headers'         => [
+                    'user-agent' => self::DEFAULT_UA,
+                ],
+            ];
 
-        // Remove temporary cookie yang ditambahkan pada addCookie request
-        $this->removeTempCookie();
-        $this->useDefaultHeaders(false);
-        // $this->cookieJar = null;
-        $this->useCookie = true;
-        $this->options   = [];
+            $this->guzzleClient = new GuzzleClient(
+                array_merge($defaultOptions, $this->getClientOptions())
+            );
+        }
 
-        return $response;
+        return $this->guzzleClient;
     }
 }
