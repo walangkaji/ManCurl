@@ -410,7 +410,7 @@ final class Request
      * ```
      *
      * @template T of object
-     * @template U of ResponseInterface
+     * @template U of ManCurlResponseInterface
      *
      * @param \Closure(U): T $fn
      *
