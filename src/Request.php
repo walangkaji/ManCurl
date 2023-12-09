@@ -250,6 +250,14 @@ final class Request
     }
 
     /**
+     * Get options
+     */
+    public function getOptions(): array
+    {
+        return $this->options;
+    }
+
+    /**
      * Build HTTP request to pass into guzzle request client.
      *
      * @throws RequestException
