@@ -1,4 +1,4 @@
-## Mak Cuurlll
+## Mak Cuurll
 
 ```sh
 composer require walangkaji/mancurl
